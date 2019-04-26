@@ -1,0 +1,12 @@
+[package]
+name = "nss-iam-user"
+version = "0.1.0"
+authors = ["Edvard Makhlin <edvard.makhlin@iii.com>"]
+edition = "2018"
+
+[lib]
+crate-type = ["dylib"]
+name = "nss_iam_user"
+
+[dependencies]
+libc = "0.2.53"
