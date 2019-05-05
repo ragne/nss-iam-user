@@ -1,0 +1,35 @@
+[tasks.build]
+clear = true
+script = [
+"""
+#!/usr/bin/env bash
+echo "args are $@";
+docker run --rm --user "$(id -u)":"$(id -g)" -e CARGO_HOME=/usr/src/myapp/target/.cache -v "$PWD":/usr/src/myapp -w /usr/src/myapp rust-build cargo build $@
+"""
+]
+
+[tasks.test]
+clear = true
+script = [
+"""
+#!/usr/bin/env bash
+docker run --rm --user "$(id -u)":"$(id -g)" -e "RUST_BACKTRACE=1" -e CARGO_HOME=/usr/src/myapp/target/.cache -v "$PWD":/usr/src/myapp -w /usr/src/myapp rust-build cargo test -- --nocapture
+"""
+]
+
+[tasks.deploy]
+dependencies = [
+    "build"
+]
+script = [
+"""
+#!/usr/bin/env bash
+scp target/debug/libnss_iam_user.so l@192.168.8.43:~
+ssh l@192.168.8.43 sudo bash << 'EOF'
+cp libnss_iam_user.so /lib/x86_64-linux-gnu/libnss_iam_user.so.2
+ldconfig
+id unknown || true
+tail -n10 /opt/bar.txt
+EOF
+"""
+]

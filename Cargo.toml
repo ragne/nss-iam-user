@@ -10,3 +10,14 @@ name = "nss_iam_user"
 
 [dependencies]
 libc = "0.2.53"
+rand = "0.6.5"
+pwhash = "0.3.0"
+fern = "0.5.8"
+log = "0.4.6"
+chrono = "0.4.6"
+lazy_static = "1.3.0"
+ctor = "0.1.9"
+
+
+[profile.release]
+debug = true
