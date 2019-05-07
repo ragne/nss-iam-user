@@ -15,6 +15,8 @@ use std::process::Command;
 extern crate ctor;
 use ctor::*;
 
+#[cfg(not(windows))]
+extern crate syslog;
 extern crate fern;
 #[macro_use]
 extern crate log;

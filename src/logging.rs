@@ -2,6 +2,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use crate::utils::geteuid;
 
 pub(crate) fn setup_logging<F: AsRef<Path>>(
     verbosity: u64,
@@ -69,10 +70,29 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
         })
         .chain(io::stdout());
 
+    let syslog_fmt = syslog::Formatter3164 {
+        facility: syslog::Facility::LOG_USER,
+        hostname: None,
+        process: "nss-iam-user".into(),
+        pid: geteuid() as i32,
+    };
+
+    match syslog::unix(syslog_fmt) {
+        Ok(syslog_logger) => {
+        let c = fern::Dispatch::new()
+        // by default only accept warning messages so as not to spam
+        .level(log::LevelFilter::Warn)
+        .chain(syslog_logger);
+        base_config = base_config.chain(c);
+        },
+        Err(e) => warn!("Cannot create syslog logger, error: {}", e)
+    };
+
     base_config
         .chain(file_config)
         .chain(stdout_config)
         .apply()?;
 
+    warn!("Should be in syslog!");
     Ok(())
 }
