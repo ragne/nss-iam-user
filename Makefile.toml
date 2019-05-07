@@ -24,8 +24,9 @@ dependencies = [
 script = [
 """
 #!/usr/bin/env bash
-scp -P 2222 target/debug/libnss_iam_user.so l@localhost:~
-ssh l@localhost -p2222 sudo bash << 'EOF'
+scp target/release/libnss_iam_user.so l@192.168.8.43:~
+ssh l@192.168.8.43 sudo bash << 'EOF'
+rm /lib/x86_64-linux-gnu/libnss_iam_user.so.2
 cp libnss_iam_user.so /lib/x86_64-linux-gnu/libnss_iam_user.so.2
 ldconfig
 id unknown || true

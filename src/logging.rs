@@ -49,7 +49,7 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
                     .chain(logfile)
             }
             Err(e) => {
-                error!("Cannot open logfile, not logging into file");
+                warn!("Cannot open logfile, not logging into file");
                 fern::Dispatch::new()
             }
         }
@@ -85,7 +85,7 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
         .chain(syslog_logger);
         base_config = base_config.chain(c);
         },
-        Err(e) => warn!("Cannot create syslog logger, error: {}", e)
+        Err(e) => println!("Cannot create syslog logger, error: {}", e)
     };
 
     base_config
@@ -93,6 +93,8 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
         .chain(stdout_config)
         .apply()?;
 
-    warn!("Should be in syslog!");
+    if cfg!(debug_assertions) {
+        warn!("Should be in syslog!");
+    }
     Ok(())
 }

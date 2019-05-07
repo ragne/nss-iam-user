@@ -1,4 +1,8 @@
 #![allow(unused_variables)]
+use std::alloc::System;
+
+#[global_allocator]
+static A: System = System;
 use libc::passwd;
 use libc::{c_char, c_int, c_uchar, gid_t, group, size_t, uid_t};
 use std::os::unix::fs::PermissionsExt;
@@ -23,7 +27,10 @@ extern crate log;
 extern crate chrono;
 extern crate pwhash;
 extern crate rand;
+extern crate rusoto_core;
+extern crate rusoto_iam;
 
+mod aws;
 mod logging;
 mod utils;
 use utils::*;

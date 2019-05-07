@@ -75,12 +75,12 @@ pub(crate) fn _get_group_list(user: &str, group: gid_t) -> Vec<String> {
         )
     };
 
-    println!("result: {}/{:?}", result, groups);
+    
     if result == -1 {
         Vec::new()
     } else {
         for gid in groups.iter().take(result as usize) {
-            println!("gid is {}", *gid);
+            
             unsafe {
                 let gr = libc::getgrgid(*gid);
                 if !gr.is_null() {
