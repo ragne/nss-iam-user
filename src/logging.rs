@@ -1,8 +1,8 @@
+use crate::utils::geteuid;
 use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
-use crate::utils::geteuid;
 
 pub(crate) fn setup_logging<F: AsRef<Path>>(
     verbosity: u64,
@@ -28,9 +28,12 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
 
     // Separate file config so we can include year, month and day in file logs
     let file_config = if verbosity >= 1 {
+        use libc::{mode_t, umask};
+
+        let old_umask: mode_t = unsafe { umask(0o011) };
         let mut logfile = OpenOptions::new();
         logfile.mode(0o666).create(true).append(true);
-        match logfile.open(filename) {
+        let logfile = match logfile.open(filename) {
             Ok(f) => {
                 let logfile = f;
                 fern::Dispatch::new()
@@ -52,7 +55,11 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
                 warn!("Cannot open logfile, not logging into file");
                 fern::Dispatch::new()
             }
+        };
+        unsafe {
+            umask(old_umask);
         }
+        logfile
     } else {
         fern::Dispatch::new()
     };
@@ -79,13 +86,13 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
 
     match syslog::unix(syslog_fmt) {
         Ok(syslog_logger) => {
-        let c = fern::Dispatch::new()
-        // by default only accept warning messages so as not to spam
-        .level(log::LevelFilter::Warn)
-        .chain(syslog_logger);
-        base_config = base_config.chain(c);
-        },
-        Err(e) => println!("Cannot create syslog logger, error: {}", e)
+            let c = fern::Dispatch::new()
+                // by default only accept warning messages so as not to spam
+                .level(log::LevelFilter::Warn)
+                .chain(syslog_logger);
+            base_config = base_config.chain(c);
+        }
+        Err(e) => println!("Cannot create syslog logger, error: {}", e),
     };
 
     base_config

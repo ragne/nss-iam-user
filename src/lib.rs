@@ -19,26 +19,41 @@ use std::process::Command;
 extern crate ctor;
 use ctor::*;
 
+extern crate fern;
 #[cfg(not(windows))]
 extern crate syslog;
-extern crate fern;
 #[macro_use]
 extern crate log;
+extern crate bincode;
 extern crate chrono;
 extern crate pwhash;
 extern crate rand;
 extern crate rusoto_core;
 extern crate rusoto_iam;
+extern crate serde;
 
 mod aws;
 mod logging;
 mod utils;
 use utils::*;
+mod user_cache;
+use aws::AWSUserCache;
+use rusoto_core::Region;
+use user_cache::UserCache;
 
+use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 
 thread_local! {
     pub static DB_IDX: RefCell<u32> = RefCell::new(1);
+}
+
+const CACHE_FILE: &'static str = "/opt/nss-iam-user-cache.bin";
+const REGION: Region = Region::UsEast1;
+
+thread_local! {
+    static CACHE: RefCell<AWSUserCache> =
+    RefCell::new(AWSUserCache::with_loaded_entries(CACHE_FILE, REGION));
 }
 
 #[ctor]
@@ -291,11 +306,20 @@ pub unsafe extern "C" fn _nss_iam_user_getgrgid_r(
 pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
     uid: uid_t,
     passwd: *mut passwd,
-    buffer: *mut c_uchar,
+    buffer: *mut c_char,
     buflen: size_t,
     errnop: *mut c_int,
 ) -> NssStatus {
     debug!("in getpwuid_r, uid: {:?}", uid);
+    CACHE.with(|ref v| {
+            let cache = (*v).borrow();
+            if let Some(ref user) = cache.get(&uid) {
+                println!("got user {:?} from cache", user);
+                *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
+            };
+        });
+    
+
     if !passwd.is_null() && !(*passwd).pw_name.is_null() {
         debug!("Got passwd: {:?}", Passwd::from(*passwd));
         if uid == 777 {
@@ -308,9 +332,10 @@ pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
                 pw_gecos: "test_gecos".to_owned(),
                 pw_dir: "/home/testname".to_owned(),
                 pw_shell: "/bin/bash".to_owned(),
+                pw_ssh_key: None,
             };
 
-            *passwd = pw.to_c(buffer, buflen).expect("Cannot convert to passwd!");
+            *passwd = pw.to_c(buffer as *mut u8, buflen).expect("Cannot convert to passwd!");
             return NssStatus::Success;
         };
 
@@ -488,8 +513,8 @@ impl Group {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Passwd2 {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Passwd2 {
     pw_name: String,
     pw_passwd: String,
     pw_uid: uid_t,
@@ -497,9 +522,43 @@ struct Passwd2 {
     pw_gecos: String,
     pw_dir: String,
     pw_shell: String,
+    pw_ssh_key: Option<Vec<String>>,
 }
 
 impl Passwd2 {
+    unsafe fn to_c_borrowed(&self, buffer: *mut c_char, buflen: size_t) -> Result<passwd, ()> {
+        let mut pw: passwd;
+        pw = std::mem::uninitialized();
+        let buf = std::slice::from_raw_parts_mut(buffer, buflen);
+        let mut offset = 0;
+
+        let dst = buf.as_mut_ptr() as *mut u8;
+        std::ptr::copy_nonoverlapping(self.pw_name.as_ptr(), dst.offset(offset as isize), self.pw_name.len()+1);
+        pw.pw_name = dst.offset(offset as isize) as *mut i8;
+        offset += self.pw_name.len()+1;
+        
+
+        std::ptr::copy_nonoverlapping(self.pw_passwd.as_ptr(), dst.offset(offset as isize), self.pw_passwd.len()+1);
+        pw.pw_passwd = dst.offset(offset as isize) as *mut i8;
+        offset += self.pw_passwd.len()+1;
+
+        std::ptr::copy_nonoverlapping(self.pw_gecos.as_ptr(), dst.offset(offset as isize), self.pw_gecos.len()+1);
+        pw.pw_gecos = dst.offset(offset as isize) as *mut i8;
+        offset += self.pw_gecos.len()+1;
+
+        std::ptr::copy_nonoverlapping(self.pw_dir.as_ptr(), dst.offset(offset as isize), self.pw_dir.len()+1);
+        pw.pw_dir = dst.offset(offset as isize) as *mut i8;
+        offset += self.pw_dir.len()+1;
+
+        std::ptr::copy_nonoverlapping(self.pw_shell.as_ptr(), dst.offset(offset as isize), self.pw_shell.len()+1);
+        pw.pw_shell = dst.offset(offset as isize) as *mut i8;
+
+        pw.pw_uid = self.pw_uid;
+        pw.pw_gid = self.pw_gid;
+
+        Ok(pw)
+    }
+
     unsafe fn to_c(self, buffer: *mut c_uchar, buflen: size_t) -> Result<passwd, ()> {
         let mut pw: passwd;
         pw = std::mem::uninitialized();
@@ -708,6 +767,7 @@ mod tests {
             pw_gecos: "test_gecos".to_owned(),
             pw_dir: "/home/testname".to_owned(),
             pw_shell: "/bin/bash".to_owned(),
+            pw_ssh_key: None,
         };
 
         let mut v = Vec::with_capacity(1000);
