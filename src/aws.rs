@@ -5,7 +5,7 @@ use libc::uid_t;
 use rusoto_core::Region;
 use rusoto_iam::{
     GetSSHPublicKeyRequest, Group, Iam, IamClient, ListGroupsRequest, ListSSHPublicKeysRequest,
-    ListUsersRequest, User,
+    ListUsersRequest, User, GetUserRequest
 };
 use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
@@ -100,6 +100,20 @@ pub(crate) fn get_users(region: Region) -> Option<Vec<User>> {
     }
 }
 
+pub(crate) fn get_user(client: &IamClient, username: String) -> Option<User> {
+    let request = GetUserRequest {
+        user_name: Some(username)
+    };
+
+    match client.get_user(request).sync() {
+        Ok(output) => Some(output.user),
+        Err(e) => {
+            println!("Cannot get user, error: {}", e);
+            None
+        }
+    }
+}
+
 pub(crate) fn get_groups(region: Region) -> Option<Vec<Group>> {
     let client = IamClient::new(region);
     let request = ListGroupsRequest {
@@ -128,19 +142,18 @@ impl AWSUserCache {
         }
     }
 
-    pub fn with_loaded_entries(filename: &str, region: Region) -> Self {
-        let mut cache = Self::new(filename, region);
+    fn refresh_cache(client: &IamClient, cache: &mut StandardCache<uid_t, NixUser>) {
         let request = ListUsersRequest {
             ..Default::default()
         };
 
-        match cache.client.list_users(request).sync() {
+        match client.list_users(request).sync() {
             Ok(output) => {
                 for user in output.users.iter() {
-                    let user_ssh_keys = get_ssh_keys(&cache.client, user.user_name.clone());
+                    let user_ssh_keys = get_ssh_keys(client, user.user_name.clone());
                     if let Ok(mut pw_user) = NixUser::try_from(user) {
                         pw_user.pw_ssh_key = user_ssh_keys;
-                        cache.inner.set(pw_user.pw_uid, pw_user);
+                        cache.set(pw_user.pw_uid, pw_user);
                     }
                 }
             }
@@ -148,8 +161,24 @@ impl AWSUserCache {
                 println!("Cannot get userlist, error: {}", e);
             }
         };
+    }
+
+    pub fn with_loaded_entries(filename: &str, region: Region) -> Self {
+        let mut cache = Self::new(filename, region);
+        AWSUserCache::refresh_cache(&cache.client, &mut cache.inner);
 
         cache
+    }
+
+    pub fn get_by_uid(&mut self, k: &uid_t) -> Option<&NixUser> {
+        if self.inner.get(k).is_some() {
+            return self.inner.get(k) 
+        } else {
+            // make an actual query
+            // just refresh all entries in cache for now, figure it out later if that's the problem
+            AWSUserCache::refresh_cache(&self.client, &mut self.inner);
+            return self.inner.get(k)
+        }
     }
 }
 

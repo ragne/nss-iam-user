@@ -59,7 +59,7 @@ thread_local! {
 #[ctor]
 /// This is an immutable static, evaluated at init time
 static LOGGER: () = {
-    let verbosity = if cfg!(debug_assertions) { 1 } else { 0 };
+    let verbosity = if cfg!(debug_assertions) { 1 } else { 1 };
     let debug_log_name = "/opt/nss-iam-user.log";
     logging::setup_logging(verbosity, debug_log_name).unwrap();
 };
@@ -312,8 +312,8 @@ pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
 ) -> NssStatus {
     debug!("in getpwuid_r, uid: {:?}", uid);
     CACHE.with(|ref v| {
-            let cache = (*v).borrow();
-            if let Some(ref user) = cache.get(&uid) {
+            let mut cache = (*v).borrow_mut();
+            if let Some(ref user) = cache.get_by_uid(&uid) {
                 println!("got user {:?} from cache", user);
                 *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
             };
