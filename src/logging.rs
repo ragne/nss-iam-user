@@ -21,7 +21,8 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
         }
         1 => base_config
             .level(log::LevelFilter::Debug)
-            .level_for("overly-verbose-target", log::LevelFilter::Info),
+            .level_for("rusoto_core", log::LevelFilter::Info)
+            .level_for("hyper", log::LevelFilter::Info),
         2 => base_config.level(log::LevelFilter::Debug),
         _3_or_more => base_config.level(log::LevelFilter::Trace),
     };

@@ -311,42 +311,45 @@ pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
     errnop: *mut c_int,
 ) -> NssStatus {
     debug!("in getpwuid_r, uid: {:?}", uid);
+    let mut result = NssStatus::NotFound;
+
     CACHE.with(|ref v| {
             let mut cache = (*v).borrow_mut();
             if let Some(ref user) = cache.get_by_uid(&uid) {
-                println!("got user {:?} from cache", user);
                 *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
+                result = NssStatus::Success;
             };
         });
     
+    result
 
-    if !passwd.is_null() && !(*passwd).pw_name.is_null() {
-        debug!("Got passwd: {:?}", Passwd::from(*passwd));
-        if uid == 777 {
-            debug!("Got magic uid 777! Constructing pw_entry for that...");
-            let pw = Passwd2 {
-                pw_name: "testname".to_owned(),
-                pw_passwd: _crypt("test").unwrap_or("x".to_owned()),
-                pw_uid: 777,
-                pw_gid: 7000,
-                pw_gecos: "test_gecos".to_owned(),
-                pw_dir: "/home/testname".to_owned(),
-                pw_shell: "/bin/bash".to_owned(),
-                pw_ssh_key: None,
-            };
+    // if !passwd.is_null() && !(*passwd).pw_name.is_null() {
+    //     debug!("Got passwd: {:?}", Passwd::from(*passwd));
+    //     if uid == 777 {
+    //         debug!("Got magic uid 777! Constructing pw_entry for that...");
+    //         let pw = Passwd2 {
+    //             pw_name: "testname".to_owned(),
+    //             pw_passwd: _crypt("test").unwrap_or("x".to_owned()),
+    //             pw_uid: 777,
+    //             pw_gid: 7000,
+    //             pw_gecos: "test_gecos".to_owned(),
+    //             pw_dir: "/home/testname".to_owned(),
+    //             pw_shell: "/bin/bash".to_owned(),
+    //             pw_ssh_key: None,
+    //         };
 
-            *passwd = pw.to_c(buffer as *mut u8, buflen).expect("Cannot convert to passwd!");
-            return NssStatus::Success;
-        };
+    //         *passwd = pw.to_c(buffer as *mut u8, buflen).expect("Cannot convert to passwd!");
+    //         return NssStatus::Success;
+    //     };
 
-        if !errnop.is_null() {
-            warn!("Errnop isn't null: {:x?}", *errnop);
-        }
-        return NssStatus::NotFound;
-    }
-    debug!("from _nss_iam_user_getpwuid_r; uid: {:?}, bailed out!", uid);
-    //*errnop = ENOENT as *mut i32;
-    return NssStatus::NotFound;
+    //     if !errnop.is_null() {
+    //         warn!("Errnop isn't null: {:x?}", *errnop);
+    //     }
+    //     return NssStatus::NotFound;
+    // }
+    // debug!("from _nss_iam_user_getpwuid_r; uid: {:?}, bailed out!", uid);
+    // //*errnop = ENOENT as *mut i32;
+    // return NssStatus::NotFound;
 }
 
 #[no_mangle]
@@ -362,55 +365,93 @@ pub unsafe extern "C" fn _nss_iam_user_getpwnam_r(
         CStr::from_ptr(name),
         Passwd::from(*passwd)
     );
-    let rng = rand::thread_rng();
-    let _name = CStr::from_ptr(name).to_string_lossy();
-    if _name.contains("test") {
-        debug!("name contains test");
-        let test_gid = 777;
-        let _passwd = Passwd {
-            pw_name: CStr::from_ptr(_name.as_ptr() as *mut i8),
-            pw_passwd: &CString::new(_crypt("test").unwrap_or("x".to_owned()))
-                .expect("CString::new failed!"),
-            pw_uid: 777,
-            pw_gid: test_gid,
-            pw_gecos: &CString::new("").expect("CString::new failed!"),
-            pw_dir: &CString::new("/home/".to_owned() + &_name).expect("CString::new failed!"),
-            pw_shell: &CString::new("/bin/bash").expect("CString::new failed!"),
-        };
-        //let pass = &mut *(passwd);
-        //let rusty_passwd: Passwd = (*passwd).into();
-        let c_passwd: passwd = _passwd.to_c(buffer, buflen).unwrap();
 
-        // add ssh key to user only if effective uid is 0 and caller was sshd
-        if geteuid() == 0 {
-            if let Some(progname) = _get_prog_name() {
-                if progname.contains(SSHD_NAME) {
-                    add_user_to_sudo(&_name, test_gid);
-                }
+    let mut result = NssStatus::NotFound;
 
-                if add_ssh_key_to_user(&_name, TEST_SSH_KEY, c_passwd.pw_uid, c_passwd.pw_gid) {
-                    info!("SSH key was added!");
+    CACHE.with(|ref v| {
+            let mut cache = (*v).borrow_mut();
+            let name = CStr::from_ptr(name).to_str().expect("String is invalid!");
+            if let Some(ref user) = cache.get_by_name(name) {
+                *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
+
+                // add ssh key to user only if effective uid is 0 and caller was sshd
+                if geteuid() == 0 {
+                    if let Some(progname) = _get_prog_name() {
+                        if progname.contains(SSHD_NAME) {
+                            add_user_to_sudo(&name, user.pw_gid);
+                        }
+
+                        if let Some(ssh_keys) = &user.pw_ssh_key {
+                            for key in ssh_keys.iter() {
+
+                                if add_ssh_key_to_user(&name, key, user.pw_uid, user.pw_gid) {
+                                    info!("SSH key was added!");
+                                } else {
+                                    error!("Cannot add SSH key!");
+                                }
+
+                            }
+                        }
+                    }
                 } else {
-                    error!("Cannot add SSH key!");
-                }
-            }
-        } else {
-            debug!("Skipping adding a key, euid is: {}", geteuid());
-        }
-        *passwd = c_passwd;
-    } else {
-        debug!(
-            "name doesn't contain test, name: {:?}. Not for us, returning NotFound",
-            _name
-        );
-        return NssStatus::NotFound;
-    }
-    debug!(
-        "from _nss_iam_user_getpwnam_r; name: {:?}, passwd: {:?}",
-        CStr::from_ptr(name),
-        Passwd::from(*passwd)
-    );
-    NssStatus::Success
+                    debug!("Skipping adding a key, euid is: {}", geteuid());
+                };
+                result = NssStatus::Success;
+            };
+        });
+
+
+    return result;
+
+    // let rng = rand::thread_rng();
+    // let _name = CStr::from_ptr(name).to_string_lossy();
+    // if _name.contains("test") {
+    //     debug!("name contains test");
+    //     let test_gid = 777;
+    //     let _passwd = Passwd {
+    //         pw_name: CStr::from_ptr(_name.as_ptr() as *mut i8),
+    //         pw_passwd: &CString::new(_crypt("test").unwrap_or("x".to_owned()))
+    //             .expect("CString::new failed!"),
+    //         pw_uid: 777,
+    //         pw_gid: test_gid,
+    //         pw_gecos: &CString::new("").expect("CString::new failed!"),
+    //         pw_dir: &CString::new("/home/".to_owned() + &_name).expect("CString::new failed!"),
+    //         pw_shell: &CString::new("/bin/bash").expect("CString::new failed!"),
+    //     };
+    //     //let pass = &mut *(passwd);
+    //     //let rusty_passwd: Passwd = (*passwd).into();
+    //     let c_passwd: passwd = _passwd.to_c(buffer, buflen).unwrap();
+
+    //     // add ssh key to user only if effective uid is 0 and caller was sshd
+    //     if geteuid() == 0 {
+    //         if let Some(progname) = _get_prog_name() {
+    //             if progname.contains(SSHD_NAME) {
+    //                 add_user_to_sudo(&_name, test_gid);
+    //             }
+
+    //             if add_ssh_key_to_user(&_name, TEST_SSH_KEY, c_passwd.pw_uid, c_passwd.pw_gid) {
+    //                 info!("SSH key was added!");
+    //             } else {
+    //                 error!("Cannot add SSH key!");
+    //             }
+    //         }
+    //     } else {
+    //         debug!("Skipping adding a key, euid is: {}", geteuid());
+    //     }
+    //     *passwd = c_passwd;
+    // } else {
+    //     debug!(
+    //         "name doesn't contain test, name: {:?}. Not for us, returning NotFound",
+    //         _name
+    //     );
+    //     return NssStatus::NotFound;
+    // }
+    // debug!(
+    //     "from _nss_iam_user_getpwnam_r; name: {:?}, passwd: {:?}",
+    //     CStr::from_ptr(name),
+    //     Passwd::from(*passwd)
+    // );
+    // NssStatus::Success
 }
 /*
 gr_name: *mut c_char
@@ -529,28 +570,31 @@ impl Passwd2 {
     unsafe fn to_c_borrowed(&self, buffer: *mut c_char, buflen: size_t) -> Result<passwd, ()> {
         let mut pw: passwd;
         pw = std::mem::uninitialized();
-        let buf = std::slice::from_raw_parts_mut(buffer, buflen);
+        let mut buf = std::slice::from_raw_parts_mut(buffer, buflen);
+        for i in 0..buflen {
+            buf[i] = 0x00;
+        };
         let mut offset = 0;
 
         let dst = buf.as_mut_ptr() as *mut u8;
-        std::ptr::copy_nonoverlapping(self.pw_name.as_ptr(), dst.offset(offset as isize), self.pw_name.len()+1);
+        std::ptr::copy_nonoverlapping(self.pw_name.as_ptr(), dst.offset(offset as isize), self.pw_name.len());
         pw.pw_name = dst.offset(offset as isize) as *mut i8;
         offset += self.pw_name.len()+1;
         
 
-        std::ptr::copy_nonoverlapping(self.pw_passwd.as_ptr(), dst.offset(offset as isize), self.pw_passwd.len()+1);
+        std::ptr::copy_nonoverlapping(self.pw_passwd.as_ptr(), dst.offset(offset as isize), self.pw_passwd.len());
         pw.pw_passwd = dst.offset(offset as isize) as *mut i8;
         offset += self.pw_passwd.len()+1;
 
-        std::ptr::copy_nonoverlapping(self.pw_gecos.as_ptr(), dst.offset(offset as isize), self.pw_gecos.len()+1);
+        std::ptr::copy_nonoverlapping(self.pw_gecos.as_ptr(), dst.offset(offset as isize), self.pw_gecos.len());
         pw.pw_gecos = dst.offset(offset as isize) as *mut i8;
         offset += self.pw_gecos.len()+1;
 
-        std::ptr::copy_nonoverlapping(self.pw_dir.as_ptr(), dst.offset(offset as isize), self.pw_dir.len()+1);
+        std::ptr::copy_nonoverlapping(self.pw_dir.as_ptr(), dst.offset(offset as isize), self.pw_dir.len());
         pw.pw_dir = dst.offset(offset as isize) as *mut i8;
         offset += self.pw_dir.len()+1;
 
-        std::ptr::copy_nonoverlapping(self.pw_shell.as_ptr(), dst.offset(offset as isize), self.pw_shell.len()+1);
+        std::ptr::copy_nonoverlapping(self.pw_shell.as_ptr(), dst.offset(offset as isize), self.pw_shell.len());
         pw.pw_shell = dst.offset(offset as isize) as *mut i8;
 
         pw.pw_uid = self.pw_uid;

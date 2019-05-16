@@ -49,8 +49,8 @@ pub struct StandardCache<K, V>
 where
     K: Hash + Eq + Serialize,
 {
-    store: HashMap<K, V>,
-    timestamp: DateTime<Utc>,
+    pub store: HashMap<K, V>,
+    pub timestamp: DateTime<Utc>,
     #[serde(skip)]
     filename: String,
 }

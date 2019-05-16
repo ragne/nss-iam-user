@@ -9,6 +9,7 @@ use rusoto_iam::{
 };
 use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
+use chrono::prelude::*;
 
 impl TryFrom<&User> for NixUser {
     type Error = Errors;
@@ -143,6 +144,11 @@ impl AWSUserCache {
     }
 
     fn refresh_cache(client: &IamClient, cache: &mut StandardCache<uid_t, NixUser>) {
+        info!("timestamp: {}", cache.timestamp);
+        if cache.timestamp + chrono::Duration::seconds(120) > Utc::now() {
+            info!("No need to refresh cache yet");
+            return 
+        }
         let request = ListUsersRequest {
             ..Default::default()
         };
@@ -161,6 +167,8 @@ impl AWSUserCache {
                 println!("Cannot get userlist, error: {}", e);
             }
         };
+        cache.timestamp = Utc::now();
+        cache.save().expect("Cannot save cache");
     }
 
     pub fn with_loaded_entries(filename: &str, region: Region) -> Self {
@@ -179,6 +187,16 @@ impl AWSUserCache {
             AWSUserCache::refresh_cache(&self.client, &mut self.inner);
             return self.inner.get(k)
         }
+    }
+
+    pub fn get_by_name(&mut self, name: &str) -> Option<&NixUser> {
+        AWSUserCache::refresh_cache(&self.client, &mut self.inner);
+        for (k,v) in self.inner.store.iter() {
+            if v.pw_name.to_lowercase() == name.to_lowercase() {
+                return Some(v)
+            }
+        }
+        None
     }
 }
 
