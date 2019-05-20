@@ -8,12 +8,9 @@ use std::hash::Hash;
 use std::io::prelude::*;
 use std::io::{BufReader, BufWriter};
 use std::os::unix::fs::OpenOptionsExt;
-use std::os::unix::fs::PermissionsExt;
-use std::str::FromStr;
+
 use chrono::prelude::*;
-
-const CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(3600);
-
+use std::str::FromStr;
 
 #[derive(Debug)]
 pub enum UserCacheError {
@@ -84,7 +81,7 @@ where
                     store = res.store;
                     timestamp = res.timestamp;
                     info!("Loaded cache from {}; Timestamp: {}", &filename, timestamp);
-                    for (k,v) in store.iter() {
+                    for (k, v) in store.iter() {
                         info!("Store<K,V>: {:?}-{:?}", k, v);
                     }
                 } else {

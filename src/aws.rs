@@ -1,17 +1,19 @@
 use super::{utils::*, Group as NixGroup, Passwd2 as NixUser};
+use crate::mini_aws::{
+    GetSSHPublicKeyRequest, GetUserRequest, Iam, IamClient, ListSSHPublicKeysRequest,
+    ListUsersRequest, User,
+};
 use crate::user_cache::StandardCache;
 use crate::user_cache::UserCache;
+use chrono::prelude::*;
 use libc::uid_t;
 use rusoto_core::Region;
-use rusoto_iam::{
-    GetSSHPublicKeyRequest, Group, Iam, IamClient, ListGroupsRequest, ListSSHPublicKeysRequest,
-    ListUsersRequest, User, GetUserRequest
-};
 use std::convert::TryFrom;
 use std::ops::{Deref, DerefMut};
-use chrono::prelude::*;
 
 use tokio_core::reactor::Core;
+
+const CACHE_TTL: i64 = 3600;
 
 impl TryFrom<&User> for NixUser {
     type Error = Errors;
@@ -43,8 +45,17 @@ fn get_ssh_public_key(region: Region, username: &str, key_id: &str) -> Option<St
     };
 
     let client = get_client(region);
-    let ft = client.get_ssh_public_key(request).with_timeout(std::time::Duration::from_secs(2));
-    let mut core = Core::new().unwrap();
+    let ft = client
+        .get_ssh_public_key(request)
+        .with_timeout(std::time::Duration::from_secs(2));
+    let mut core: Core;
+    match Core::new() {
+        Ok(runtime) => core = runtime,
+        Err(e) => {
+            error!("Cannot create core for futures! Error: {}", e);
+            return None;
+        }
+    };
     std::mem::drop(client);
 
     match core.run(ft) {
@@ -72,8 +83,17 @@ pub(crate) fn get_ssh_keys(region: Region, username: String) -> Option<Vec<Strin
     let mut result: Vec<String> = Vec::new();
 
     let client = get_client(region.clone());
-    let ft = client.list_ssh_public_keys(request).with_timeout(std::time::Duration::from_secs(2));
-    let mut core = Core::new().unwrap();
+    let ft = client
+        .list_ssh_public_keys(request)
+        .with_timeout(std::time::Duration::from_secs(2));
+    let mut core: Core;
+    match Core::new() {
+        Ok(runtime) => core = runtime,
+        Err(e) => {
+            error!("Cannot create core for futures! Error: {}", e);
+            return None;
+        }
+    };
     std::mem::drop(client);
 
     match core.run(ft) {
@@ -100,50 +120,6 @@ pub(crate) fn get_ssh_keys(region: Region, username: String) -> Option<Vec<Strin
     Some(result)
 }
 
-pub(crate) fn get_users(region: Region) -> Option<Vec<User>> {
-    let client = IamClient::new(region);
-    let request = ListUsersRequest {
-        ..Default::default()
-    };
-
-    match client.list_users(request).sync() {
-        Ok(output) => Some(output.users),
-        Err(e) => {
-            println!("Cannot get userlist, error: {}", e);
-            None
-        }
-    }
-}
-
-pub(crate) fn get_user(client: &IamClient, username: String) -> Option<User> {
-    let request = GetUserRequest {
-        user_name: Some(username)
-    };
-
-    match client.get_user(request).sync() {
-        Ok(output) => Some(output.user),
-        Err(e) => {
-            println!("Cannot get user, error: {}", e);
-            None
-        }
-    }
-}
-
-pub(crate) fn get_groups(region: Region) -> Option<Vec<Group>> {
-    let client = IamClient::new(region);
-    let request = ListGroupsRequest {
-        ..Default::default()
-    };
-
-    match client.list_groups(request).sync() {
-        Ok(output) => Some(output.groups),
-        Err(e) => {
-            println!("Cannot get grouplist, error: {}", e);
-            None
-        }
-    }
-}
-
 fn get_client(region: Region) -> IamClient {
     IamClient::new(region)
 }
@@ -164,17 +140,26 @@ impl AWSUserCache {
     fn refresh_cache(region: Region, cache: &mut StandardCache<uid_t, NixUser>) {
         info!("timestamp: {}", cache.timestamp);
 
-        if cache.timestamp + chrono::Duration::seconds(120) > Utc::now() {
+        if cache.timestamp + chrono::Duration::seconds(CACHE_TTL) > Utc::now() {
             info!("No need to refresh cache yet");
-            return 
+            return;
         }
         let request = ListUsersRequest {
             ..Default::default()
         };
 
         let client = get_client(region.clone());
-        let ft = client.list_users(request).with_timeout(std::time::Duration::from_secs(2));
-        let mut core = Core::new().unwrap();
+        let ft = client
+            .list_users(request)
+            .with_timeout(std::time::Duration::from_secs(2));
+        let mut core: Core;
+        match Core::new() {
+            Ok(runtime) => core = runtime,
+            Err(e) => {
+                error!("Cannot create core for futures! Error: {}", e);
+                return;
+            }
+        };
         std::mem::drop(client);
 
         match core.run(ft) {
@@ -194,7 +179,10 @@ impl AWSUserCache {
         };
 
         cache.timestamp = Utc::now();
-        cache.save().expect("Cannot save cache");
+        cache
+            .save()
+            .map_err(|e| warn!("Cannot save cache, error: {}", e))
+            .unwrap_or(());
     }
 
     pub fn with_loaded_entries(filename: &str, region: Region) -> Self {
@@ -206,20 +194,20 @@ impl AWSUserCache {
 
     pub fn get_by_uid(&mut self, k: &uid_t) -> Option<&NixUser> {
         if self.inner.get(k).is_some() {
-            return self.inner.get(k) 
+            return self.inner.get(k);
         } else {
             // make an actual query
             // just refresh all entries in cache for now, figure it out later if that's the problem
             AWSUserCache::refresh_cache(self.region.clone(), &mut self.inner);
-            return self.inner.get(k)
+            return self.inner.get(k);
         }
     }
 
     pub fn get_by_name(&mut self, name: &str) -> Option<&NixUser> {
         AWSUserCache::refresh_cache(self.region.clone(), &mut self.inner);
-        for (k,v) in self.inner.store.iter() {
+        for (k, v) in self.inner.store.iter() {
             if v.pw_name.to_lowercase() == name.to_lowercase() {
-                return Some(v)
+                return Some(v);
             }
         }
         None
