@@ -29,6 +29,8 @@ extern crate chrono;
 extern crate pwhash;
 extern crate rand;
 extern crate rusoto_core;
+#[macro_use]
+extern crate lazy_static;
 
 extern crate serde;
 extern crate tokio_core;
@@ -45,6 +47,7 @@ use user_cache::UserCache;
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
+extern crate os_type;
 
 mod mini_aws;
 
@@ -69,7 +72,16 @@ static LOGGER: () = {
 };
 
 const SSHD_NAME: &'static str = "sshd";
-const USER_SUDO_CMD: &'static str = "usermod -a -G sudo";
+lazy_static! {
+    static ref SUDO_GROUP: &'static str = {
+        match os_type::current_platform().os_type {
+            os_type::OSType::CentOS | os_type::OSType::Redhat => "wheel",
+            _ => "sudo",
+        }
+    };
+}
+
+const USER_SUDO_CMD: &'static str = "usermod -a -G";
 
 fn add_user_to_sudo(username: &str, usergid: gid_t) -> bool {
     debug!(
@@ -86,7 +98,8 @@ fn add_user_to_sudo(username: &str, usergid: gid_t) -> bool {
         _get_prog_name().unwrap_or("#cannot-get-name#".to_string())
     );
 
-    let sudo_cmd = USER_SUDO_CMD.to_owned() + " " + username;
+    let sudo_cmd = format!("{} {} {}", USER_SUDO_CMD, *SUDO_GROUP, username);
+    debug!("sudo cmd is: {}", sudo_cmd);
     let mut cmd = Command::new("sh");
     cmd.arg("-c").arg(sudo_cmd);
     match cmd.output() {
