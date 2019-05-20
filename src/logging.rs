@@ -3,6 +3,7 @@ use std::fs::OpenOptions;
 use std::io;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
+use std::thread;
 
 pub(crate) fn setup_logging<F: AsRef<Path>>(
     verbosity: u64,
@@ -39,14 +40,17 @@ pub(crate) fn setup_logging<F: AsRef<Path>>(
                 let logfile = f;
                 fern::Dispatch::new()
                     .format(|out, message, record| {
+                        let thread = thread::current();
                         out.finish(format_args!(
-                            "{}[{}][{}] {}:{}::{} {}",
+                            "{}[{}][{}] {}:{}::{}[{}:{:?}] {}",
                             chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
                             record.target(),
                             record.level(),
                             record.file().unwrap_or(""),
                             record.line().unwrap_or(0),
                             record.module_path().unwrap_or(""),
+                            thread.name().unwrap_or(""),
+                            thread.id(),
                             message
                         ))
                     })

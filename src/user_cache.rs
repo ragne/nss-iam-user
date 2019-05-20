@@ -63,12 +63,12 @@ fn read_to_buf(filename: &str, buffer: &mut Vec<u8>) -> std::io::Result<usize> {
 
 impl<K, V> StandardCache<K, V>
 where
-    K: Hash + Eq + Serialize + DeserializeOwned,
-    V: Serialize + DeserializeOwned,
+    K: Hash + Eq + Serialize + DeserializeOwned + std::fmt::Debug,
+    V: Serialize + DeserializeOwned + std::fmt::Debug,
 {
     pub fn new(filename: &str) -> Self {
         let mut store = HashMap::new();
-        let mut timestamp = Utc::now();
+        let mut timestamp = Utc::now() - chrono::Duration::seconds(120);
         if Path::new(filename).exists() {
             // load later
             let filesize = match std::fs::metadata(&filename) {
@@ -83,6 +83,10 @@ where
                 if let Ok(res) = bincode::deserialize::<StandardCache<K, V>>(&buffer) {
                     store = res.store;
                     timestamp = res.timestamp;
+                    info!("Loaded cache from {}; Timestamp: {}", &filename, timestamp);
+                    for (k,v) in store.iter() {
+                        info!("Store<K,V>: {:?}-{:?}", k, v);
+                    }
                 } else {
                     warn!("Cannot read cache file, it's corrupted!");
                 }
@@ -121,12 +125,13 @@ where
     }
 
     fn save(&mut self) -> Result<(), std::io::Error> {
+        warn!("in save!");
         use std::io::{Error, ErrorKind};
 
         use libc::{mode_t, umask};
         let old_umask: mode_t = unsafe { umask(0o011) };
         let mut file = OpenOptions::new();
-        file.mode(0o666).create(true).append(true);
+        file.mode(0o666).create(true).write(true);
         let file = file.open(PathBuf::from_str(&self.filename).unwrap())?;
         let writer = BufWriter::new(file);
         bincode::serialize_into(writer, &self).map_err(|e| {
@@ -138,6 +143,7 @@ where
         unsafe {
             umask(old_umask);
         }
+        warn!("about to return");
         Ok(())
     }
 }

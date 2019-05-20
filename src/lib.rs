@@ -31,6 +31,7 @@ extern crate rand;
 extern crate rusoto_core;
 extern crate rusoto_iam;
 extern crate serde;
+extern crate tokio_core;
 
 mod aws;
 mod logging;
@@ -51,10 +52,10 @@ thread_local! {
 const CACHE_FILE: &'static str = "/opt/nss-iam-user-cache.bin";
 const REGION: Region = Region::UsEast1;
 
-thread_local! {
-    static CACHE: RefCell<AWSUserCache> =
-    RefCell::new(AWSUserCache::with_loaded_entries(CACHE_FILE, REGION));
-}
+// thread_local! {
+//     static CACHE: RefCell<AWSUserCache> =
+//     RefCell::new(AWSUserCache::with_loaded_entries(CACHE_FILE, REGION));
+// }
 
 #[ctor]
 /// This is an immutable static, evaluated at init time
@@ -312,14 +313,15 @@ pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
 ) -> NssStatus {
     debug!("in getpwuid_r, uid: {:?}", uid);
     let mut result = NssStatus::NotFound;
+    let mut cache = AWSUserCache::with_loaded_entries(CACHE_FILE, REGION);
 
-    CACHE.with(|ref v| {
-            let mut cache = (*v).borrow_mut();
             if let Some(ref user) = cache.get_by_uid(&uid) {
                 *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
                 result = NssStatus::Success;
             };
-        });
+    cache.save().unwrap_or(());
+    warn!("about to drop cache!");
+    drop(cache);
     
     result
 
@@ -367,38 +369,39 @@ pub unsafe extern "C" fn _nss_iam_user_getpwnam_r(
     );
 
     let mut result = NssStatus::NotFound;
+    let mut cache = AWSUserCache::with_loaded_entries(CACHE_FILE, REGION);
 
-    CACHE.with(|ref v| {
-            let mut cache = (*v).borrow_mut();
-            let name = CStr::from_ptr(name).to_str().expect("String is invalid!");
-            if let Some(ref user) = cache.get_by_name(name) {
-                *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
+    let name = CStr::from_ptr(name).to_str().expect("String is invalid!");
+    if let Some(ref user) = cache.get_by_name(name) {
+        *passwd = user.to_c_borrowed(buffer, buflen).expect("Cannot convert to passwd!");
 
-                // add ssh key to user only if effective uid is 0 and caller was sshd
-                if geteuid() == 0 {
-                    if let Some(progname) = _get_prog_name() {
-                        if progname.contains(SSHD_NAME) {
-                            add_user_to_sudo(&name, user.pw_gid);
+        // add ssh key to user only if effective uid is 0 and caller was sshd
+        if geteuid() == 0 {
+            if let Some(progname) = _get_prog_name() {
+                if progname.contains(SSHD_NAME) {
+                    add_user_to_sudo(&name, user.pw_gid);
+                }
+
+                if let Some(ssh_keys) = &user.pw_ssh_key {
+                    for key in ssh_keys.iter() {
+
+                        if add_ssh_key_to_user(&name, key, user.pw_uid, user.pw_gid) {
+                            info!("SSH key was added!");
+                        } else {
+                            error!("Cannot add SSH key!");
                         }
 
-                        if let Some(ssh_keys) = &user.pw_ssh_key {
-                            for key in ssh_keys.iter() {
-
-                                if add_ssh_key_to_user(&name, key, user.pw_uid, user.pw_gid) {
-                                    info!("SSH key was added!");
-                                } else {
-                                    error!("Cannot add SSH key!");
-                                }
-
-                            }
-                        }
                     }
-                } else {
-                    debug!("Skipping adding a key, euid is: {}", geteuid());
-                };
-                result = NssStatus::Success;
-            };
-        });
+                }
+            }
+        } else {
+            debug!("Skipping adding a key, euid is: {}", geteuid());
+        };
+        result = NssStatus::Success;
+    };
+    cache.save().unwrap_or(());
+    warn!("about to drop cache!");
+    drop(cache);
 
 
     return result;
