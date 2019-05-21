@@ -47,7 +47,7 @@ use user_cache::UserCache;
 
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
-extern crate os_type;
+extern crate os_info;
 
 mod mini_aws;
 
@@ -74,8 +74,8 @@ static LOGGER: () = {
 const SSHD_NAME: &'static str = "sshd";
 lazy_static! {
     static ref SUDO_GROUP: &'static str = {
-        match os_type::current_platform().os_type {
-            os_type::OSType::CentOS | os_type::OSType::Redhat => "wheel",
+        match os_info::get().os_type() {
+            os_info::Type::Amazon | os_info::Type::Redhat | os_info::Type::Centos => "wheel",
             _ => "sudo",
         }
     };
@@ -89,8 +89,8 @@ fn add_user_to_sudo(username: &str, usergid: gid_t) -> bool {
         username,
         _get_group_list(username, usergid)
     );
-    if _get_group_list(username, usergid).contains(&"sudo".to_owned()) {
-        debug!("user '{}' already member of `sudo` group!", username);
+    if _get_group_list(username, usergid).contains(&(*SUDO_GROUP).to_owned()) {
+        debug!("user '{}' already member of `{}` group!", username, *SUDO_GROUP);
         return true;
     }
     debug!(

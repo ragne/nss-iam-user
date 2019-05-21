@@ -8,6 +8,10 @@ edition = "2018"
 crate-type = ["cdylib"]
 name = "nss_iam_user"
 
+[[bin]]
+name = "detect-os"
+path = "src/detect-os.rs"
+
 [dependencies]
 libc = "0.2.55"
 rand = "0.6.5"
@@ -27,7 +31,7 @@ tokio-core = "0.1.7"
 serde_urlencoded = "0.5.1"
 futures = "0.1.16"
 xml-rs = "0.7"
-os_type="2.2"
+os_info = { git="https://github.com/ragne/os_info.git", branch="amazon-linux"}
 
 [profile.release]
 debug = true

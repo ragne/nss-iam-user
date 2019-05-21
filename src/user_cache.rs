@@ -89,7 +89,9 @@ where
                 }
             }
         } else {
-            info!("Cache file '{}' doesn't exist", filename)
+            info!("Cache file '{}' doesn't exist", filename);
+            // set timestamp back in time to force cache refresh
+            timestamp = timestamp - chrono::Duration::seconds(6000);
         };
 
         Self {
