@@ -13,8 +13,16 @@ use std::ops::{Deref, DerefMut};
 
 use tokio_core::reactor::Core;
 
-const CACHE_TTL: i64 = 3600;
+const CACHE_TTL: i64 = 600; // default cache expiration in seconds (10 minutes)
 
+/// Conversion from AWS IAM `User` into `NixUser` (aka passwd struct)
+/// # Assumptions
+/// - Username can be converted to nix one by replacing all allowed in iam but dissallowed in Nix symbols to underscore
+///   and convert it to lowercase
+/// - To get an uid from userId weak hash function is used without any attempt to detect a collision, this isn't easily
+///   fixable (at least for me), so for our use case it should be decent
+/// - User has no password (pwchange is also disabled)
+/// - $HOMEDIR assumed to be `/home/`
 impl TryFrom<&User> for NixUser {
     type Error = Errors;
 
@@ -60,7 +68,6 @@ fn get_ssh_public_key(region: Region, username: &str, key_id: &str) -> Option<St
 
     match core.run(ft) {
         Ok(output) => {
-            debug!("output: {:?}", output);
             if let Some(pubkey) = output.ssh_public_key {
                 Some(pubkey.ssh_public_key_body)
             } else {
@@ -120,15 +127,18 @@ pub(crate) fn get_ssh_keys(region: Region, username: String) -> Option<Vec<Strin
     Some(result)
 }
 
+#[inline]
 fn get_client(region: Region) -> IamClient {
     IamClient::new(region)
 }
 
+/// Cache for AWS IAM users based on StandardCache
 pub struct AWSUserCache {
     inner: StandardCache<uid_t, NixUser>,
     region: Region,
 }
 
+/// Cache for AWS IAM users, for nitty-gritty details see `TryFrom<&User> for NixUser`
 impl AWSUserCache {
     pub fn new(filename: &str, region: Region) -> Self {
         Self {
@@ -138,7 +148,7 @@ impl AWSUserCache {
     }
 
     fn refresh_cache(region: Region, cache: &mut StandardCache<uid_t, NixUser>) {
-        info!("timestamp: {}", cache.timestamp);
+        debug!("timestamp: {}", cache.timestamp);
 
         if cache.timestamp + chrono::Duration::seconds(CACHE_TTL) > Utc::now() {
             info!("No need to refresh cache yet");
@@ -174,7 +184,7 @@ impl AWSUserCache {
                 }
             }
             Err(e) => {
-                println!("Cannot get userlist, error: {}", e);
+                error!("Cannot get userlist, error: {}", e);
             }
         };
 
@@ -192,17 +202,19 @@ impl AWSUserCache {
         cache
     }
 
+    /// Get IAM user by generated uid
     pub fn get_by_uid(&mut self, k: &uid_t) -> Option<&NixUser> {
         if self.inner.get(k).is_some() {
             return self.inner.get(k);
         } else {
-            // make an actual query
+            // haven't found the user in cache, refresh the cache in case user was just added and try again
             // just refresh all entries in cache for now, figure it out later if that's the problem
             AWSUserCache::refresh_cache(self.region.clone(), &mut self.inner);
             return self.inner.get(k);
         }
     }
 
+    /// Get IAM user by name
     pub fn get_by_name(&mut self, name: &str) -> Option<&NixUser> {
         AWSUserCache::refresh_cache(self.region.clone(), &mut self.inner);
         for (k, v) in self.inner.store.iter() {

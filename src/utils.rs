@@ -48,6 +48,7 @@ pub(crate) fn _get_prog_name() -> Option<String> {
     }
 }
 
+#[allow(unused)]
 pub(crate) fn get_alnum_string(size: usize) -> String {
     let mut rng = rand::thread_rng();
     iter::repeat(())
@@ -129,6 +130,11 @@ pub enum Errors {
     InvalidChar(String),
 }
 
+/// Tries to convert IAM username to *nux username
+/// The rules for *nix usernames:
+///  - No more that `USER_NAME_MAX_LENGTH` length
+///  - Should consists only of alphanumeric chars
+///  - All chars that allowed in IAM user names are replaced with `_` underscore
 pub(crate) fn iam_username_to_nix(name: &str) -> Result<String, Errors> {
     #[inline]
     fn is_valid(c: char) -> bool {

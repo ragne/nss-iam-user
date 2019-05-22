@@ -1,3 +1,6 @@
+/// AWS IAM handpicked structs for performing requests to IAM. Based on rusoto-IAM
+/// The main motivation is to get rid of all the structs we aren't using, but they're still got linked into dylib
+/// anyway.
 use std::error::Error;
 use std::fmt;
 

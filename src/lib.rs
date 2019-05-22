@@ -56,8 +56,9 @@ thread_local! {
 }
 
 const CACHE_FILE: &'static str = "/opt/nss-iam-user-cache.bin";
-const REGION: Region = Region::UsEast1;
+const REGION: Region = Region::UsEast1; // IDK why, but even with InstanceProfile attached to the machine works only if you call IAM from that region
 
+// @TODO: wire it back again
 thread_local! {
     static CACHE: RefCell<AWSUserCache> =
     RefCell::new(AWSUserCache::with_loaded_entries(CACHE_FILE, REGION));
@@ -66,13 +67,23 @@ thread_local! {
 #[ctor]
 /// This is an immutable static, evaluated at init time
 static LOGGER: () = {
-    let verbosity = if cfg!(debug_assertions) { 1 } else { 1 };
+    let verbosity = if cfg!(debug_assertions) {
+        1
+    } else {
+        if std::env::var("NSS_IAM_USER_DEBUG").is_ok() {
+            1
+        } else {
+            0
+        }
+    };
+
     let debug_log_name = "/opt/nss-iam-user.log";
     logging::setup_logging(verbosity, debug_log_name).unwrap_or(())
 };
 
 const SSHD_NAME: &'static str = "sshd";
 lazy_static! {
+    // detect sudo group based on OS distribution, RHEL (and AWS Linux) has `wheel`, while Debian has s`udo`
     static ref SUDO_GROUP: &'static str = {
         match os_info::get().os_type() {
             os_info::Type::Amazon | os_info::Type::Redhat | os_info::Type::Centos => "wheel",
@@ -90,7 +101,10 @@ fn add_user_to_sudo(username: &str, usergid: gid_t) -> bool {
         _get_group_list(username, usergid)
     );
     if _get_group_list(username, usergid).contains(&(*SUDO_GROUP).to_owned()) {
-        debug!("user '{}' already member of `{}` group!", username, *SUDO_GROUP);
+        debug!(
+            "user '{}' already member of `{}` group!",
+            username, *SUDO_GROUP
+        );
         return true;
     }
     debug!(
@@ -260,7 +274,35 @@ pub unsafe extern "C" fn _nss_iam_user_getgrnam_r(
         "from _nss_iam_user_getgrnam_r; gid: {:?}",
         CStr::from_ptr(name)
     );
-    NssStatus::NotFound
+    let mut result = NssStatus::NotFound;
+
+    CACHE.with(|v| {
+        let cache = v.try_borrow_mut();
+        if cache.is_err() {
+            result = NssStatus::TryAgain;
+        }
+        if let Some(user) = cache
+            .unwrap()
+            .get_by_name(&CStr::from_ptr(name).to_string_lossy())
+        {
+            let mut g = Group::default();
+            g.gr_gid = user.pw_uid;
+            g.gr_name = user.pw_name.clone();
+            g.gr_passwd = "x".to_owned();
+            g.gr_mem = vec![user.pw_name.clone()];
+            match g.to_c(buf as *mut u8, buflen) {
+                Ok(g) => {
+                    *grp = g;
+                    result = NssStatus::Success;
+                }
+                Err(e) => {
+                    error!("Impossible!!! Cannot convert group. Error: {}", e);
+                    result = NssStatus::NotFound;
+                }
+            };
+        }
+    });
+    result
 }
 
 #[no_mangle]
@@ -272,29 +314,31 @@ pub unsafe extern "C" fn _nss_iam_user_getgrgid_r(
     errnop: *mut c_int,
 ) -> NssStatus {
     debug!("from _nss_iam_user_getgrgid_r; gid: {}", gid);
-    if !grp.is_null() {
-        let g = Group::from(*grp);
-        debug!("from _nss_iam_user_getgrgid_r; Group: {:?}", g);
-        let mut g = Group::default();
-        g.gr_gid = gid;
-        g.gr_name = "testgroup".to_owned();
-        g.gr_passwd = "x".to_owned();
-        g.gr_mem = vec!["testname".to_owned()];
-
-        match g.to_c(buf as *mut u8, buflen) {
-            Ok(g) => {
-                *grp = g;
-            }
-            Err(e) => {
-                error!("Impossible!!! Cannot convert group. Error: {}", e);
-                return NssStatus::NotFound;
-            }
-        };
-    } else {
-        debug!("from _nss_iam_user_getgrgid_r; Group: null");
-        // should NotFound being returned here ???
-    }
-    NssStatus::Success
+    let mut result = NssStatus::NotFound;
+    CACHE.with(|v| {
+        let cache = v.try_borrow_mut();
+        if cache.is_err() {
+            result = NssStatus::TryAgain;
+        }
+        if let Some(user) = cache.unwrap().get_by_uid(&gid) {
+            let mut g = Group::default();
+            g.gr_gid = gid;
+            g.gr_name = user.pw_name.clone();
+            g.gr_passwd = "x".to_owned();
+            g.gr_mem = vec![user.pw_name.clone()];
+            match g.to_c(buf as *mut u8, buflen) {
+                Ok(g) => {
+                    *grp = g;
+                    result = NssStatus::Success;
+                }
+                Err(e) => {
+                    error!("Impossible!!! Cannot convert group. Error: {}", e);
+                    result = NssStatus::NotFound;
+                }
+            };
+        }
+    });
+    result
 }
 
 #[no_mangle]
@@ -316,7 +360,6 @@ pub unsafe extern "C" fn _nss_iam_user_getpwuid_r(
         result = NssStatus::Success;
     };
     cache.save().unwrap_or(());
-    warn!("about to drop cache!");
     drop(cache);
 
     result
@@ -363,17 +406,11 @@ pub unsafe extern "C" fn _nss_iam_user_getpwnam_r(
         result = NssStatus::Success;
     };
     cache.save().unwrap_or(());
-    warn!("about to drop cache!");
     drop(cache);
 
     return result;
 }
-/*
-gr_name: *mut c_char
-gr_passwd: *mut c_char
-gr_gid: gid_t
-gr_mem: *mut *mut c_char
-*/
+
 #[derive(Debug, Clone, Default)]
 struct Group {
     gr_name: String,
@@ -385,12 +422,10 @@ struct Group {
 impl From<group> for Group {
     fn from(group: group) -> Self {
         unsafe {
-            // @TODO: copy instead of claiming ownership!
-
             let group_name = _get_new_cstring(group.gr_name)
                 .into_string()
                 .unwrap_or("noname".to_owned());
-            // let mut group_members = vec![];
+            let mut group_members = vec![];
             //traverse **char (*mut *mut char)
             for i in 0.. {
                 // get a pointer to *char
@@ -404,11 +439,16 @@ impl From<group> for Group {
                         .expect("Cannot convert to rust-String!");
 
                     debug!("Group: {} has {}", group_name, member);
-                    //group_members.push(member);
+                    group_members.push(member);
                 }
             }
 
-            Group::default()
+            Group {
+                gr_name: group_name,
+                gr_passwd: "x".to_owned(),
+                gr_gid: group.gr_gid,
+                gr_mem: group_members,
+            }
         }
     }
 }
