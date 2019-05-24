@@ -507,6 +507,7 @@ pub struct Passwd2 {
     pw_gecos: String,
     pw_dir: String,
     pw_shell: String,
+    // TODO: Don't store ssh-keys in cache file, always fetch them from source
     pw_ssh_key: Option<Vec<String>>,
 }
 
